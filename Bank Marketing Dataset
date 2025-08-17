@@ -1,0 +1,145 @@
+"""
+Task 1 — Term Deposit Subscription Prediction (Bank Marketing)
+==============================================================
+
+Steps:
+1. Download dataset (bank-additional.zip) and extract `bank-additional-full.csv`.
+2. Update the DATA_PATH variable below to your CSV path.
+3. Run: python task1.py
+
+Outputs:
+- Confusion Matrix
+- F1 Score
+- ROC AUC and ROC curve
+- SHAP feature explanations for 5 predictions
+"""
+
+
+DATA_PATH = r"D:\internship task 2\bank+marketing (1)\bank-additional\bank-additional\bank-additional-full.csv"
+
+RANDOM_STATE = 42
+
+# Imports
+import pandas as pd
+import numpy as np
+from pathlib import Path
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from sklearn.model_selection import train_test_split
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.pipeline import Pipeline
+from sklearn.metrics import (
+    confusion_matrix, classification_report,
+    roc_auc_score, RocCurveDisplay, f1_score
+)
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+
+import shap
+
+pd.set_option("display.max_columns", 200)
+
+# Load dataset
+path = Path(DATA_PATH)
+assert path.exists(), f"File not found: {path}"
+
+df = pd.read_csv(path, sep=';')
+
+
+df.columns = df.columns.str.strip()
+
+print("Dataset shape:", df.shape)
+print(df.head())
+
+# Clean target
+df['y'] = (df['y'].astype(str).str.lower().str.strip() == 'yes').astype(int)
+print("\nTarget distribution:\n", df['y'].value_counts())
+
+# Train/valid split
+X = df.drop(columns=['y'])
+y = df['y']
+
+# Determine numeric & categorical columns from X (not df!)
+num_cols = X.select_dtypes(include=['number']).columns.tolist()
+cat_cols = [c for c in X.columns if c not in num_cols]
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, stratify=y, random_state=RANDOM_STATE
+)
+
+
+# Preprocessing
+preprocess = ColumnTransformer([
+    ('num', StandardScaler(with_mean=False), num_cols),
+    ('cat', OneHotEncoder(handle_unknown='ignore'), cat_cols)
+])
+
+# Models
+log_reg = Pipeline([('pre', preprocess),
+                    ('clf', LogisticRegression(max_iter=1000, class_weight='balanced'))])
+
+rf = Pipeline([('pre', preprocess),
+               ('clf', RandomForestClassifier(
+                   n_estimators=400, random_state=RANDOM_STATE, n_jobs=-1, class_weight='balanced'
+               ))])
+
+# Evaluation helper
+def evaluate(model, name):
+    model.fit(X_train, y_train)
+    preds = model.predict(X_test)
+    proba = model.predict_proba(X_test)[:,1]
+    cm = confusion_matrix(y_test, preds)
+    f1 = f1_score(y_test, preds)
+    auc = roc_auc_score(y_test, proba)
+    print(f"\n=== {name} ===")
+    print("F1:", round(f1,4), "| ROC AUC:", round(auc,4))
+    print("Classification report:\n", classification_report(y_test, preds, digits=4))
+    print("Confusion Matrix:\n", cm)
+    RocCurveDisplay.from_predictions(y_test, proba)
+    plt.title(f"ROC — {name}")
+    plt.show()
+    return model, f1, auc
+
+m1, f1_lr, auc_lr = evaluate(log_reg, "Logistic Regression")
+m2, f1_rf, auc_rf = evaluate(rf, "Random Forest")
+
+best_model = m2 if auc_rf >= auc_lr else m1
+best_name = "Random Forest" if best_model is m2 else "Logistic Regression"
+print("Best model:", best_name)
+
+# SHAP explanations for 5 predictions
+X_test_transformed = best_model.named_steps['pre'].transform(X_test)
+clf = best_model.named_steps['clf']
+
+if best_name == "Random Forest":
+    explainer = shap.TreeExplainer(clf)
+    sv_all = explainer.shap_values(X_test_transformed)
+    shap_vals = sv_all[1] if isinstance(sv_all, list) else sv_all
+else:
+    sample = X_test.sample(min(200, len(X_test)), random_state=RANDOM_STATE)
+    background = best_model.named_steps['pre'].transform(sample)
+    explainer = shap.KernelExplainer(clf.predict_proba, background)
+    shap_vals = explainer.shap_values(X_test_transformed[:5])[1]
+
+# Bar summary
+try:
+    shap.summary_plot(shap_vals, X_test_transformed, plot_type='bar', show=True)
+except Exception as e:
+    print("SHAP summary failed:", e)
+
+# Force plots for 5 random samples
+idxs = np.random.RandomState(RANDOM_STATE).choice(
+    np.arange(X_test.shape[0]), size=min(5, X_test.shape[0]), replace=False
+)
+for i in idxs:
+    try:
+        shap.force_plot(explainer.expected_value[1] if hasattr(explainer, 'expected_value') else None,
+                        shap_vals[i], matplotlib=True)
+        plt.title(f"SHAP Force Plot — Sample {i}")
+        plt.show()
+    except Exception as e:
+        print("Force plot failed:", e)
+
+print("\nTask 1 completed successfully.")
