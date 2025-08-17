@@ -1,0 +1,128 @@
+"""
+Task 2 — Customer Segmentation (Mall Customers)
+===============================================
+
+Steps:
+1. Download dataset (Mall_Customers.csv).
+2. Update the DATA_PATH variable below to your CSV path.
+3. Run: python task2_customer_segmentation.py
+
+Outputs:
+- EDA: summary, pairplots
+- KMeans clustering (elbow & silhouette)
+- PCA and t-SNE visualizations
+- Segment profiling (mean, median, min, max per cluster)
+- Suggested marketing strategies per segment
+"""
+
+
+DATA_PATH = r"D:\internship task 2\archive (3)\Mall_Customers.csv"
+
+
+RANDOM_STATE = 42
+
+# Imports
+import pandas as pd
+import numpy as np
+from pathlib import Path
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
+
+pd.set_option("display.max_columns", 200)
+
+# Load dataset
+path = Path(DATA_PATH)
+assert path.exists(), f"File not found: {path}"
+
+df = pd.read_csv(path)
+print("Dataset shape:", df.shape)
+print(df.head())
+
+# EDA
+print("\nInfo:")
+print(df.info())
+print("\nDescribe:")
+print(df.describe())
+
+sns.pairplot(df[['Age', 'Annual Income (k$)', 'Spending Score (1-100)']])
+plt.suptitle("Pairplot of Numeric Features")
+plt.show()
+
+# Features for clustering
+features = ['Age', 'Annual Income (k$)', 'Spending Score (1-100)']
+X = df[features].copy()
+
+# Scale
+scaler = StandardScaler()
+Xs = scaler.fit_transform(X)
+
+# Elbow & silhouette method
+ks = range(2, 11)
+inertias, sils = [], []
+for k in ks:
+    km = KMeans(n_clusters=k, random_state=RANDOM_STATE, n_init='auto')
+    km.fit(Xs)
+    inertias.append(km.inertia_)
+    sils.append(silhouette_score(Xs, km.labels_))
+
+plt.plot(list(ks), inertias, marker='o')
+plt.title("Elbow Method (Inertia)")
+plt.xlabel("k"); plt.ylabel("Inertia")
+plt.show()
+
+plt.plot(list(ks), sils, marker='o')
+plt.title("Silhouette Score vs k")
+plt.xlabel("k"); plt.ylabel("Silhouette Score")
+plt.show()
+
+# Fit final model (choose k=4 based on elbow/silhouette)
+k_final = 4
+kmeans = KMeans(n_clusters=k_final, random_state=RANDOM_STATE, n_init='auto')
+labels = kmeans.fit_predict(Xs)
+df['Segment'] = labels
+print("\nSegment counts:\n", df['Segment'].value_counts())
+
+# PCA visualization
+pca = PCA(n_components=2, random_state=RANDOM_STATE)
+X_pca = pca.fit_transform(Xs)
+plt.scatter(X_pca[:,0], X_pca[:,1], c=labels, cmap='tab10')
+plt.title("PCA — Customer Segments")
+plt.xlabel("PC1"); plt.ylabel("PC2")
+plt.show()
+
+# t-SNE visualization
+tsne = TSNE(n_components=2, random_state=RANDOM_STATE, init='pca', perplexity=30)
+X_tsne = tsne.fit_transform(Xs)
+plt.scatter(X_tsne[:,0], X_tsne[:,1], c=labels, cmap='tab10')
+plt.title("t-SNE — Customer Segments")
+plt.xlabel("Dim 1"); plt.ylabel("Dim 2")
+plt.show()
+
+# Segment profiling
+segment_profile = df.groupby('Segment')[features].agg(['mean','median','min','max','count'])
+print("\nSegment profiles:\n", segment_profile)
+
+# Suggested marketing strategies
+strategies = {
+    0: "High income, high score → Premium loyalty, VIP services.",
+    1: "High income, low score → Cross-sell, personalized promos.",
+    2: "Low income, high score → Discounts, referral programs.",
+    3: "Low income, low score → Awareness campaigns, budget bundles."
+}
+df['Strategy'] = df['Segment'].map(strategies)
+
+print("\nSample customers with strategies:")
+print(df[['CustomerID','Segment','Strategy']].head(10))
+
+# Save segmented dataset
+out_path = Path("task2_segmented_output.csv")
+df.to_csv(out_path, index=False)
+print("\nSegmented data saved to:", out_path.resolve())
+
+print("\nTask 2 completed successfully.")
