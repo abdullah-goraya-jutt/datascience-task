@@ -1,0 +1,136 @@
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import roc_auc_score, precision_recall_curve, auc, confusion_matrix
+from catboost import CatBoostClassifier, Pool
+
+# =====================================================
+# Load dataset
+# =====================================================
+DATA_PATH = r"D:\internship task 2\application_train.csv\application_train.csv"  # must exist in same folder
+df = pd.read_csv(DATA_PATH)
+
+print(f"Rows: {df.shape[0]:,} | Features (num={df.select_dtypes(exclude=['object']).shape[1]}, cat={df.select_dtypes(include=['object']).shape[1]})")
+
+# =====================================================
+# Drop high-missing columns (>40%)
+# =====================================================
+missing_frac = df.isnull().mean()
+drop_cols = missing_frac[missing_frac > 0.4].index
+df = df.drop(columns=drop_cols)
+print(f"Dropped {len(drop_cols)} high-missing columns.")
+
+# Target
+y = df["TARGET"]
+X = df.drop(columns=["TARGET"])
+
+# Split num/cat columns
+cat_cols = X.select_dtypes(include=["object"]).columns.tolist()
+num_cols = X.select_dtypes(exclude=["object"]).columns.tolist()
+
+# Fill missing values
+X[num_cols] = X[num_cols].fillna(X[num_cols].median())
+X[cat_cols] = X[cat_cols].astype(str).fillna("MISSING")
+
+# =====================================================
+# Train/Validation split
+# =====================================================
+X_train, X_val, y_train, y_val = train_test_split(
+    X, y, test_size=0.2, stratify=y, random_state=42
+)
+
+# =====================================================
+# Logistic Regression pipeline
+# =====================================================
+preprocess = ColumnTransformer(
+    transformers=[
+        ("num", StandardScaler(), num_cols),
+        ("ohe", OneHotEncoder(handle_unknown="ignore", sparse_output=True), cat_cols),
+    ]
+)
+
+log_reg = Pipeline(
+    steps=[("pre", preprocess),
+           ("clf", LogisticRegression(max_iter=500, solver="lbfgs"))]
+)
+
+print("\nTraining Logistic Regression…")
+log_reg.fit(X_train, y_train)
+val_probs = log_reg.predict_proba(X_val)[:, 1]
+
+roc = roc_auc_score(y_val, val_probs)
+prec, rec, thr = precision_recall_curve(y_val, val_probs)
+pr_auc = auc(rec, prec)
+
+# Cost–benefit analysis thresholds
+FP_COST = 500   # false positive cost
+FN_COST = 5000  # false negative cost
+
+costs = []
+for t in thr:
+    preds = (val_probs >= t).astype(int)
+    tn, fp, fn, tp = confusion_matrix(y_val, preds).ravel()
+    total_cost = fp * FP_COST + fn * FN_COST
+    costs.append((t, total_cost))
+
+best_thr, min_cost = min(costs, key=lambda x: x[1])
+print(f"LogReg | ROC-AUC: {roc:.4f} | PR-AUC: {pr_auc:.4f} | Best thr (min cost): {best_thr:.3f} | Cost: {min_cost:,}")
+
+# Confusion matrix at best threshold
+preds_thr = (val_probs >= best_thr).astype(int)
+tn, fp, fn, tp = confusion_matrix(y_val, preds_thr).ravel()
+print("\nLogReg @ best threshold (VAL)")
+print(f"TP: {tp:6d}   FP: {fp:6d}")
+print(f"FN: {fn:6d}   TN: {tn:6d}")
+
+# =====================================================
+# CatBoost Classifier
+# =====================================================
+print("\nTraining CatBoost…")
+
+# Ensure categorical features are strings
+for col in cat_cols:
+    X_train[col] = X_train[col].astype(str).fillna("MISSING")
+    X_val[col]   = X_val[col].astype(str).fillna("MISSING")
+
+cat_indices = [X_train.columns.get_loc(c) for c in cat_cols]
+
+train_pool = Pool(X_train, y_train, cat_features=cat_indices)
+val_pool   = Pool(X_val, y_val, cat_features=cat_indices)
+
+cat = CatBoostClassifier(
+    iterations=300,
+    depth=8,
+    learning_rate=0.1,
+    loss_function="Logloss",
+    eval_metric="AUC",
+    random_seed=42,
+    verbose=100
+)
+
+cat.fit(train_pool, eval_set=val_pool, use_best_model=True)
+
+val_probs_cb = cat.predict_proba(X_val)[:, 1]
+roc_cb = roc_auc_score(y_val, val_probs_cb)
+prec, rec, thr = precision_recall_curve(y_val, val_probs_cb)
+pr_auc_cb = auc(rec, prec)
+
+# Cost–benefit analysis for CatBoost
+costs_cb = []
+for t in thr:
+    preds = (val_probs_cb >= t).astype(int)
+    tn, fp, fn, tp = confusion_matrix(y_val, preds).ravel()
+    total_cost = fp * FP_COST + fn * FN_COST
+    costs_cb.append((t, total_cost))
+
+best_thr_cb, min_cost_cb = min(costs_cb, key=lambda x: x[1])
+print(f"CatBoost | ROC-AUC: {roc_cb:.4f} | PR-AUC: {pr_auc_cb:.4f} | Best thr (min cost): {best_thr_cb:.3f} | Cost: {min_cost_cb:,}")
+
+# Feature importance
+feat_imp = pd.Series(cat.get_feature_importance(), index=X_train.columns).sort_values(ascending=False)
+print("\nTop 10 important features (CatBoost):")
+print(feat_imp.head(10))
