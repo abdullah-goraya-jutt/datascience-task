@@ -1,0 +1,66 @@
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+
+# --- Page Config ---
+st.set_page_config(page_title="Global Superstore Dashboard", layout="wide")
+
+# --- Load Data ---
+@st.cache_data
+def load_data():
+    df = pd.read_excel("Global Superstore.xls")
+    df['Order Date'] = pd.to_datetime(df['Order Date'])
+    df['Ship Date'] = pd.to_datetime(df['Ship Date'])
+    return df
+
+df = load_data()
+
+# --- Sidebar Filters ---
+st.sidebar.header("Filters")
+regions = st.sidebar.multiselect("Select Region", options=df["Region"].unique(), default=df["Region"].unique())
+categories = st.sidebar.multiselect("Select Category", options=df["Category"].unique(), default=df["Category"].unique())
+subcats = st.sidebar.multiselect("Select Sub-Category", options=df["Sub-Category"].unique(), default=df["Sub-Category"].unique())
+
+filtered_df = df[
+    (df["Region"].isin(regions)) &
+    (df["Category"].isin(categories)) &
+    (df["Sub-Category"].isin(subcats))
+]
+
+# --- KPIs ---
+total_sales = filtered_df["Sales"].sum()
+total_profit = filtered_df["Profit"].sum()
+profit_margin = (total_profit / total_sales) * 100 if total_sales > 0 else 0
+
+kpi1, kpi2, kpi3 = st.columns(3)
+kpi1.metric("💰 Total Sales", f"${total_sales:,.0f}")
+kpi2.metric("📈 Total Profit", f"${total_profit:,.0f}")
+kpi3.metric("📊 Profit Margin", f"{profit_margin:.2f}%")
+
+st.markdown("---")
+
+# --- Charts ---
+# Sales over Time
+sales_trend = filtered_df.groupby("Order Date")["Sales"].sum().reset_index()
+fig_sales = px.line(sales_trend, x="Order Date", y="Sales", title="Sales Trend Over Time")
+st.plotly_chart(fig_sales, use_container_width=True)
+
+# Profit by Region
+profit_region = filtered_df.groupby("Region")["Profit"].sum().reset_index()
+fig_region = px.bar(profit_region, x="Region", y="Profit", title="Profit by Region", color="Region")
+st.plotly_chart(fig_region, use_container_width=True)
+
+# Segment-wise Performance
+seg_perf = filtered_df.groupby("Segment")[["Sales", "Profit"]].sum().reset_index()
+fig_segment = px.bar(seg_perf, x="Segment", y=["Sales", "Profit"], title="Segment-wise Performance", barmode="group")
+st.plotly_chart(fig_segment, use_container_width=True)
+
+# Top 5 Customers
+top_customers = filtered_df.groupby("Customer Name")["Sales"].sum().nlargest(5).reset_index()
+fig_customers = px.bar(top_customers, x="Customer Name", y="Sales", title="Top 5 Customers by Sales", color="Sales")
+st.plotly_chart(fig_customers, use_container_width=True)
+
+st.dataframe(top_customers)
+
+# --- Download Option ---
+st.download_button("Download Filtered Data", data=filtered_df.to_csv(index=False), file_name="filtered_data.csv", mime="text/csv")
