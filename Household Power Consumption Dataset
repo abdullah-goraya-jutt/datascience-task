@@ -1,0 +1,154 @@
+"""
+Task 3 — Household Power Consumption (Forecasting with ARIMA, Prophet, XGBoost)
+"""
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from statsmodels.tsa.stattools import adfuller
+from statsmodels.tsa.arima.model import ARIMA
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+import warnings
+warnings.filterwarnings("ignore")
+
+# === CONFIG ===
+DATA_PATH = r"D:\internship task 2\individual+household+electric+power+consumption\household_power_consumption.txt"
+
+# === Load dataset ===
+df = pd.read_csv(
+    DATA_PATH,
+    sep=";",
+    parse_dates={"Datetime": ["Date", "Time"]},
+    infer_datetime_format=True,
+    na_values=["?"],
+    usecols=["Date", "Time", "Global_active_power", "Voltage", "Global_intensity"]
+)
+
+print("Raw rows:", len(df))
+print(df.head())
+
+# Convert numeric
+for col in ["Global_active_power", "Voltage", "Global_intensity"]:
+    df[col] = pd.to_numeric(df[col], errors="coerce")
+
+df = df.dropna().set_index("Datetime")
+
+# Resample hourly
+hourly = df.resample("H").mean()
+hourly = hourly.asfreq("H")  # explicit freq
+print("\nHourly rows:", len(hourly))
+print("Range:", hourly.index.min(), "->", hourly.index.max())
+
+# Train-test split
+train, test = hourly["Global_active_power"][:-168], hourly["Global_active_power"][-168:]
+print("\nTrain length:", len(train), "Test length:", len(test))
+
+# ADF test
+result = adfuller(train.dropna())
+print(f"ADF stat: {result[0]:.3f} | p-value: {result[1]:.2e} ->",
+      "Stationary" if result[1] < 0.05 else "Not stationary")
+
+# ================================
+# 1. ARIMA
+# ================================
+print("\nTraining ARIMA...")
+arima_model = ARIMA(train, order=(5,1,0)).fit()
+arima_forecast = arima_model.forecast(steps=168)
+
+mae_arima = mean_absolute_error(test, arima_forecast)
+rmse_arima = np.sqrt(mean_squared_error(test, arima_forecast))
+mape_arima = np.mean(np.abs((test - arima_forecast) / test)) * 100
+
+# Plot ARIMA
+plt.figure(figsize=(12,6))
+plt.plot(test.index, test, label="Actual")
+plt.plot(test.index, arima_forecast, label="ARIMA Forecast")
+plt.title("ARIMA: Actual vs Forecast (Last 7 Days)")
+plt.legend(); plt.show()
+
+# ================================
+# 2. Prophet
+# ================================
+try:
+    from prophet import Prophet
+    print("Training Prophet...")
+    prophet_df = train.reset_index()[["Datetime","Global_active_power"]]
+    prophet_df.columns = ["ds","y"]
+    m = Prophet()
+    m.fit(prophet_df)
+    future = pd.DataFrame({"ds": test.index})
+    forecast = m.predict(future)
+    prophet_forecast = forecast["yhat"].values
+
+    mae_prophet = mean_absolute_error(test, prophet_forecast)
+    rmse_prophet = np.sqrt(mean_squared_error(test, prophet_forecast))
+    mape_prophet = np.mean(np.abs((test - prophet_forecast) / test)) * 100
+
+    # Plot Prophet
+    plt.figure(figsize=(12,6))
+    plt.plot(test.index, test, label="Actual")
+    plt.plot(test.index, prophet_forecast, label="Prophet Forecast")
+    plt.title("Prophet: Actual vs Forecast (Last 7 Days)")
+    plt.legend(); plt.show()
+except Exception as e:
+    print("Prophet failed:", e)
+    mae_prophet = rmse_prophet = mape_prophet = np.nan
+    prophet_forecast = None
+
+# ================================
+# 3. XGBoost
+# ================================
+try:
+    from xgboost import XGBRegressor
+    print("Training XGBoost...")
+    hourly["hour"] = hourly.index.hour
+    hourly["dayofweek"] = hourly.index.dayofweek
+    hourly["is_weekend"] = (hourly["dayofweek"]>=5).astype(int)
+
+    X = hourly[["hour","dayofweek","is_weekend"]]
+    y = hourly["Global_active_power"]
+
+    X_train, X_test = X.iloc[:-168], X.iloc[-168:]
+    y_train, y_test = y.iloc[:-168], y.iloc[-168:]
+
+    xgb = XGBRegressor(n_estimators=200, random_state=42)
+    xgb.fit(X_train, y_train)
+    xgb_forecast = xgb.predict(X_test)
+
+    mae_xgb = mean_absolute_error(y_test, xgb_forecast)
+    rmse_xgb = np.sqrt(mean_squared_error(y_test, xgb_forecast))
+    mape_xgb = np.mean(np.abs((y_test - xgb_forecast) / y_test)) * 100
+
+    # Plot XGBoost
+    plt.figure(figsize=(12,6))
+    plt.plot(test.index, test, label="Actual")
+    plt.plot(test.index, xgb_forecast, label="XGBoost Forecast")
+    plt.title("XGBoost: Actual vs Forecast (Last 7 Days)")
+    plt.legend(); plt.show()
+except Exception as e:
+    print("XGBoost failed:", e)
+    mae_xgb = rmse_xgb = mape_xgb = np.nan
+    xgb_forecast = None
+
+# ================================
+# Results
+# ================================
+print("\n=== Holdout (last 7 days) metrics ===")
+print(f"ARIMA   | MAE: {mae_arima:.3f} RMSE: {rmse_arima:.3f} MAPE: {mape_arima:.2f}%")
+print(f"Prophet | MAE: {mae_prophet:.3f} RMSE: {rmse_prophet:.3f} MAPE: {mape_prophet:.2f}%")
+print(f"XGBoost | MAE: {mae_xgb:.3f} RMSE: {rmse_xgb:.3f} MAPE: {mape_xgb:.2f}%")
+
+# ================================
+# 4. Combined plot
+# ================================
+plt.figure(figsize=(12,6))
+plt.plot(test.index, test, label="Actual")
+plt.plot(test.index, arima_forecast, label="ARIMA")
+if prophet_forecast is not None:
+    plt.plot(test.index, prophet_forecast, label="Prophet")
+if xgb_forecast is not None:
+    plt.plot(test.index, xgb_forecast, label="XGBoost")
+plt.title("Comparison: Actual vs All Models (Last 7 Days)")
+plt.legend(); plt.show()
+
+print("\nTask 3 completed successfully with 4 graphs.")
